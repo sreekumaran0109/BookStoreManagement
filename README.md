@@ -81,3 +81,18 @@ Before running this project, you need to have the following installed:
 - **Book Management**: Once logged in, you can manage book inventory (add or update books), sell books, view sales history, reset sales records, and calculate total income.
 
 ## Example Usage
+1
+2
+SIGNUP/LOGIN(1,2):1 USERNAME: JohnDoe PASSWORD: mypassword123 Signup successful!
+
+1
+2
+SIGNUP/LOGIN(1,2):2 USERNAME: JohnDoe PASSWORD: mypassword123 LOGIN SUCCESSFUL MY BOOK STORE
+
+1
+Books 2
+Books 3
+Books 4
+Record 5
+Books 6
+Income after the Latest Reset 7
