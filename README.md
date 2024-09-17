@@ -1,0 +1,2 @@
+# BookStoreManagement
+Python Connector, MySQL
