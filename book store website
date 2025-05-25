@@ -1,0 +1,785 @@
+Flask==2.0.1
+mysql-connector-python==8.0.26
+Flask-SQLAlchemy==2.5.1
+Flask-Login==0.5.0
+Werkzeug==2.0.1
+
+from flask import Flask, render_template, request, redirect, url_for, flash, session
+from flask_sqlalchemy import SQLAlchemy
+from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
+from werkzeug.security import generate_password_hash, check_password_hash
+import os
+
+app = Flask(__name__)
+app.config['SECRET_KEY'] = 'your-secret-key'  # Change this to a secure secret key
+app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql://sree:root@localhost/store'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+db = SQLAlchemy(app)
+login_manager = LoginManager()
+login_manager.init_app(app)
+login_manager.login_view = 'login'
+
+# Models
+class User(UserMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(20), unique=True, nullable=False)
+    password = db.Column(db.String(20), nullable=False)
+
+class Book(db.Model):
+    BookName = db.Column(db.String(30), primary_key=True)
+    Genre = db.Column(db.String(20))
+    Quantity = db.Column(db.Integer)
+    Author = db.Column(db.String(20))
+    Publication = db.Column(db.String(30))
+    Price = db.Column(db.Integer)
+
+class SellRecord(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    CustomerName = db.Column(db.String(20))
+    PhoneNumber = db.Column(db.String(10), unique=True)
+    BookName = db.Column(db.String(30), db.ForeignKey('book.BookName'))
+    Quantity = db.Column(db.Integer)
+    Price = db.Column(db.Integer)
+    Total_Amount = db.Column(db.Integer)
+
+@login_manager.user_loader
+def load_user(user_id):
+    return User.query.get(int(user_id))
+
+# Routes
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+@app.route('/signup', methods=['GET', 'POST'])
+def signup():
+    if request.method == 'POST':
+        username = request.form['username']
+        password = request.form['password']
+        
+        if User.query.filter_by(username=username).first():
+            flash('Username already exists')
+            return redirect(url_for('signup'))
+        
+        new_user = User(username=username, password=password)
+        db.session.add(new_user)
+        db.session.commit()
+        flash('Signup successful!')
+        return redirect(url_for('login'))
+    
+    return render_template('signup.html')
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        username = request.form['username']
+        password = request.form['password']
+        
+        user = User.query.filter_by(username=username).first()
+        if user and user.password == password:
+            login_user(user)
+            return redirect(url_for('dashboard'))
+        
+        flash('Invalid username or password')
+    return render_template('login.html')
+
+@app.route('/dashboard')
+@login_required
+def dashboard():
+    return render_template('dashboard.html')
+
+@app.route('/add_book', methods=['GET', 'POST'])
+@login_required
+def add_book():
+    if request.method == 'POST':
+        book = Book(
+            BookName=request.form['book_name'],
+            Genre=request.form['genre'],
+            Quantity=int(request.form['quantity']),
+            Author=request.form['author'],
+            Publication=request.form['publication'],
+            Price=int(request.form['price'])
+        )
+        
+        existing_book = Book.query.get(book.BookName)
+        if existing_book:
+            existing_book.Quantity += book.Quantity
+            flash('Book quantity updated successfully!')
+        else:
+            db.session.add(book)
+            flash('Book added successfully!')
+        
+        db.session.commit()
+        return redirect(url_for('dashboard'))
+    
+    return render_template('add_book.html')
+
+@app.route('/sell_book', methods=['GET', 'POST'])
+@login_required
+def sell_book():
+    if request.method == 'POST':
+        book_name = request.form['book_name']
+        quantity = int(request.form['quantity'])
+        customer_name = request.form['customer_name']
+        phone_number = request.form['phone_number']
+        
+        book = Book.query.get(book_name)
+        if book and book.Quantity >= quantity:
+            total_amount = book.Price * quantity
+            sell_record = SellRecord(
+                CustomerName=customer_name,
+                PhoneNumber=phone_number,
+                BookName=book_name,
+                Quantity=quantity,
+                Price=book.Price,
+                Total_Amount=total_amount
+            )
+            
+            book.Quantity -= quantity
+            db.session.add(sell_record)
+            db.session.commit()
+            flash('Book sold successfully!')
+        else:
+            flash('Book not available in requested quantity!')
+        
+        return redirect(url_for('dashboard'))
+    
+    books = Book.query.all()
+    return render_template('sell_book.html', books=books)
+
+@app.route('/search_books')
+@login_required
+def search_books():
+    search_type = request.args.get('type')
+    search_term = request.args.get('term')
+    
+    if search_type == 'name':
+        books = Book.query.filter_by(BookName=search_term).all()
+    elif search_type == 'genre':
+        books = Book.query.filter_by(Genre=search_term).all()
+    elif search_type == 'author':
+        books = Book.query.filter_by(Author=search_term).all()
+    else:
+        books = []
+    
+    return render_template('search_results.html', books=books)
+
+@app.route('/sell_records')
+@login_required
+def sell_records():
+    records = SellRecord.query.all()
+    return render_template('sell_records.html', records=records)
+
+@app.route('/reset_records', methods=['POST'])
+@login_required
+def reset_records():
+    SellRecord.query.delete()
+    db.session.commit()
+    flash('Sell records have been reset!')
+    return redirect(url_for('sell_records'))
+
+@app.route('/available_books')
+@login_required
+def available_books():
+    books = Book.query.order_by(Book.BookName).all()
+    return render_template('available_books.html', books=books)
+
+@app.route('/total_income')
+@login_required
+def total_income():
+    total = db.session.query(db.func.sum(SellRecord.Total_Amount)).scalar() or 0
+    return render_template('total_income.html', total=total)
+
+@app.route('/logout')
+@login_required
+def logout():
+    logout_user()
+    return redirect(url_for('index'))
+
+if __name__ == '__main__':
+    with app.app_context():
+        db.create_all()
+    app.run(debug=True)
+
+    <!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Book Store{% endblock %}</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body {
+            background-color: #f8f9fa;
+        }
+        .navbar {
+            background-color: #2c3e50;
+        }
+        .navbar-brand, .nav-link {
+            color: white !important;
+        }
+        .card {
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        .flash-messages {
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg navbar-dark mb-4">
+        <div class="container">
+            <a class="navbar-brand" href="{{ url_for('index') }}">Book Store</a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav ms-auto">
+                    {% if current_user.is_authenticated %}
+                        <li class="nav-item">
+                            <a class="nav-link" href="{{ url_for('dashboard') }}">Dashboard</a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" href="{{ url_for('logout') }}">Logout</a>
+                        </li>
+                    {% else %}
+                        <li class="nav-item">
+                            <a class="nav-link" href="{{ url_for('login') }}">Login</a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" href="{{ url_for('signup') }}">Sign Up</a>
+                        </li>
+                    {% endif %}
+                </ul>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container">
+        {% with messages = get_flashed_messages() %}
+            {% if messages %}
+                <div class="flash-messages">
+                    {% for message in messages %}
+                        <div class="alert alert-info alert-dismissible fade show">
+                            {{ message }}
+                            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                        </div>
+                    {% endfor %}
+                </div>
+            {% endif %}
+        {% endwith %}
+
+        {% block content %}{% endblock %}
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
+
+{% extends "base.html" %}
+
+{% block title %}Welcome - Book Store{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-8 text-center">
+        <div class="card">
+            <div class="card-body">
+                <h1 class="display-4 mb-4">Welcome to Book Store</h1>
+                <p class="lead">Your one-stop solution for managing your bookstore inventory and sales.</p>
+                {% if not current_user.is_authenticated %}
+                    <div class="mt-4">
+                        <a href="{{ url_for('login') }}" class="btn btn-primary btn-lg me-3">Login</a>
+                        <a href="{{ url_for('signup') }}" class="btn btn-outline-primary btn-lg">Sign Up</a>
+                    </div>
+                {% else %}
+                    <div class="mt-4">
+                        <a href="{{ url_for('dashboard') }}" class="btn btn-primary btn-lg">Go to Dashboard</a>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% extends "base.html" %}
+
+{% block title %}Login - Book Store{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-body">
+                <h2 class="card-title text-center mb-4">Login</h2>
+                <form method="POST">
+                    <div class="mb-3">
+                        <label for="username" class="form-label">Username</label>
+                        <input type="text" class="form-control" id="username" name="username" required>
+                    </div>
+                    <div class="mb-3">
+                        <label for="password" class="form-label">Password</label>
+                        <input type="password" class="form-control" id="password" name="password" required>
+                    </div>
+                    <div class="d-grid">
+                        <button type="submit" class="btn btn-primary">Login</button>
+                    </div>
+                </form>
+                <div class="text-center mt-3">
+                    <p>Don't have an account? <a href="{{ url_for('signup') }}">Sign up</a></p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% extends "base.html" %}
+
+{% block title %}Sign Up - Book Store{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-body">
+                <h2 class="card-title text-center mb-4">Sign Up</h2>
+                <form method="POST">
+                    <div class="mb-3">
+                        <label for="username" class="form-label">Username</label>
+                        <input type="text" class="form-control" id="username" name="username" required>
+                    </div>
+                    <div class="mb-3">
+                        <label for="password" class="form-label">Password</label>
+                        <input type="password" class="form-control" id="password" name="password" required>
+                    </div>
+                    <div class="d-grid">
+                        <button type="submit" class="btn btn-primary">Sign Up</button>
+                    </div>
+                </form>
+                <div class="text-center mt-3">
+                    <p>Already have an account? <a href="{{ url_for('login') }}">Login</a></p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% extends "base.html" %}
+
+{% block title %}Dashboard - Book Store{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <h2 class="mb-4">Dashboard</h2>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-md-4 mb-4">
+        <div class="card h-100">
+            <div class="card-body">
+                <h5 class="card-title">Add Books</h5>
+                <p class="card-text">Add new books to your inventory or update existing ones.</p>
+                <a href="{{ url_for('add_book') }}" class="btn btn-primary">Add Books</a>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-4 mb-4">
+        <div class="card h-100">
+            <div class="card-body">
+                <h5 class="card-title">Sell Books</h5>
+                <p class="card-text">Process book sales and manage customer transactions.</p>
+                <a href="{{ url_for('sell_book') }}" class="btn btn-primary">Sell Books</a>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-4 mb-4">
+        <div class="card h-100">
+            <div class="card-body">
+                <h5 class="card-title">Search Books</h5>
+                <p class="card-text">Search for books by name, genre, or author.</p>
+                <a href="{{ url_for('search_books') }}" class="btn btn-primary">Search Books</a>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-4 mb-4">
+        <div class="card h-100">
+            <div class="card-body">
+                <h5 class="card-title">Sell Records</h5>
+                <p class="card-text">View and manage your sales history.</p>
+                <a href="{{ url_for('sell_records') }}" class="btn btn-primary">View Records</a>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-4 mb-4">
+        <div class="card h-100">
+            <div class="card-body">
+                <h5 class="card-title">Available Books</h5>
+                <p class="card-text">View your current inventory of books.</p>
+                <a href="{{ url_for('available_books') }}" class="btn btn-primary">View Inventory</a>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-4 mb-4">
+        <div class="card h-100">
+            <div class="card-body">
+                <h5 class="card-title">Total Income</h5>
+                <p class="card-text">View your total income since the last reset.</p>
+                <a href="{{ url_for('total_income') }}" class="btn btn-primary">View Income</a>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% extends "base.html" %}
+
+{% block title %}Add Book - Book Store{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-8">
+        <div class="card">
+            <div class="card-body">
+                <h2 class="card-title mb-4">Add New Book</h2>
+                <form method="POST">
+                    <div class="mb-3">
+                        <label for="book_name" class="form-label">Book Name</label>
+                        <input type="text" class="form-control" id="book_name" name="book_name" required>
+                    </div>
+                    <div class="mb-3">
+                        <label for="genre" class="form-label">Genre</label>
+                        <input type="text" class="form-control" id="genre" name="genre" required>
+                    </div>
+                    <div class="mb-3">
+                        <label for="quantity" class="form-label">Quantity</label>
+                        <input type="number" class="form-control" id="quantity" name="quantity" min="1" required>
+                    </div>
+                    <div class="mb-3">
+                        <label for="author" class="form-label">Author</label>
+                        <input type="text" class="form-control" id="author" name="author" required>
+                    </div>
+                    <div class="mb-3">
+                        <label for="publication" class="form-label">Publication</label>
+                        <input type="text" class="form-control" id="publication" name="publication" required>
+                    </div>
+                    <div class="mb-3">
+                        <label for="price" class="form-label">Price</label>
+                        <input type="number" class="form-control" id="price" name="price" min="1" required>
+                    </div>
+                    <div class="d-grid gap-2">
+                        <button type="submit" class="btn btn-primary">Add Book</button>
+                        <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary">Back to Dashboard</a>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% extends "base.html" %}
+
+{% block title %}Sell Book - Book Store{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-8">
+        <div class="card">
+            <div class="card-body">
+                <h2 class="card-title mb-4">Sell Book</h2>
+                <form method="POST">
+                    <div class="mb-3">
+                        <label for="customer_name" class="form-label">Customer Name</label>
+                        <input type="text" class="form-control" id="customer_name" name="customer_name" required>
+                    </div>
+                    <div class="mb-3">
+                        <label for="phone_number" class="form-label">Phone Number</label>
+                        <input type="tel" class="form-control" id="phone_number" name="phone_number" pattern="[0-9]{10}" required>
+                    </div>
+                    <div class="mb-3">
+                        <label for="book_name" class="form-label">Book Name</label>
+                        <select class="form-select" id="book_name" name="book_name" required>
+                            <option value="">Select a book</option>
+                            {% for book in books %}
+                                <option value="{{ book.BookName }}">{{ book.BookName }} (Available: {{ book.Quantity }})</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label for="quantity" class="form-label">Quantity</label>
+                        <input type="number" class="form-control" id="quantity" name="quantity" min="1" required>
+                    </div>
+                    <div class="d-grid gap-2">
+                        <button type="submit" class="btn btn-primary">Sell Book</button>
+                        <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary">Back to Dashboard</a>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card">
+            <div class="card-body">
+                <h5 class="card-title">Available Books</h5>
+                <div class="table-responsive">
+                    <table class="table table-striped">
+                        <thead>
+                            <tr>
+                                <th>Book Name</th>
+                                <th>Quantity</th>
+                                <th>Price</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for book in books %}
+                                <tr>
+                                    <td>{{ book.BookName }}</td>
+                                    <td>{{ book.Quantity }}</td>
+                                    <td>{{ book.Price }}</td>
+                                </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% extends "base.html" %}
+
+{% block title %}Search Books - Book Store{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-8">
+        <div class="card">
+            <div class="card-body">
+                <h2 class="card-title mb-4">Search Books</h2>
+                <form method="GET" action="{{ url_for('search_books') }}">
+                    <div class="mb-3">
+                        <label class="form-label">Search By</label>
+                        <div class="form-check">
+                            <input class="form-check-input" type="radio" name="type" id="search_name" value="name" checked>
+                            <label class="form-check-label" for="search_name">
+                                Book Name
+                            </label>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="radio" name="type" id="search_genre" value="genre">
+                            <label class="form-check-label" for="search_genre">
+                                Genre
+                            </label>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="radio" name="type" id="search_author" value="author">
+                            <label class="form-check-label" for="search_author">
+                                Author
+                            </label>
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <label for="term" class="form-label">Search Term</label>
+                        <input type="text" class="form-control" id="term" name="term" required>
+                    </div>
+                    <div class="d-grid gap-2">
+                        <button type="submit" class="btn btn-primary">Search</button>
+                        <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary">Back to Dashboard</a>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% extends "base.html" %}
+
+{% block title %}Search Results - Book Store{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-body">
+                <h2 class="card-title mb-4">Search Results</h2>
+                {% if books %}
+                    <div class="table-responsive">
+                        <table class="table table-striped">
+                            <thead>
+                                <tr>
+                                    <th>Book Name</th>
+                                    <th>Genre</th>
+                                    <th>Quantity</th>
+                                    <th>Author</th>
+                                    <th>Publication</th>
+                                    <th>Price</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for book in books %}
+                                    <tr>
+                                        <td>{{ book.BookName }}</td>
+                                        <td>{{ book.Genre }}</td>
+                                        <td>{{ book.Quantity }}</td>
+                                        <td>{{ book.Author }}</td>
+                                        <td>{{ book.Publication }}</td>
+                                        <td>{{ book.Price }}</td>
+                                    </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                {% else %}
+                    <div class="alert alert-info">
+                        No books found matching your search criteria.
+                    </div>
+                {% endif %}
+                <div class="mt-3">
+                    <a href="{{ url_for('search_books') }}" class="btn btn-primary">New Search</a>
+                    <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary">Back to Dashboard</a>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% extends "base.html" %}
+
+{% block title %}Sell Records - Book Store{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-body">
+                <h2 class="card-title mb-4">Sell Records</h2>
+                {% if records %}
+                    <div class="table-responsive">
+                        <table class="table table-striped">
+                            <thead>
+                                <tr>
+                                    <th>Customer Name</th>
+                                    <th>Phone Number</th>
+                                    <th>Book Name</th>
+                                    <th>Quantity</th>
+                                    <th>Price</th>
+                                    <th>Total Amount</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for record in records %}
+                                    <tr>
+                                        <td>{{ record.CustomerName }}</td>
+                                        <td>{{ record.PhoneNumber }}</td>
+                                        <td>{{ record.BookName }}</td>
+                                        <td>{{ record.Quantity }}</td>
+                                        <td>{{ record.Price }}</td>
+                                        <td>{{ record.Total_Amount }}</td>
+                                    </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                    <form method="POST" action="{{ url_for('reset_records') }}" class="mt-3" onsubmit="return confirm('Are you sure you want to reset all sell records?');">
+                        <button type="submit" class="btn btn-danger">Reset Records</button>
+                    </form>
+                {% else %}
+                    <div class="alert alert-info">
+                        No sell records found.
+                    </div>
+                {% endif %}
+                <div class="mt-3">
+                    <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary">Back to Dashboard</a>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% extends "base.html" %}
+
+{% block title %}Available Books - Book Store{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-body">
+                <h2 class="card-title mb-4">Available Books</h2>
+                {% if books %}
+                    <div class="table-responsive">
+                        <table class="table table-striped">
+                            <thead>
+                                <tr>
+                                    <th>Book Name</th>
+                                    <th>Genre</th>
+                                    <th>Quantity</th>
+                                    <th>Author</th>
+                                    <th>Publication</th>
+                                    <th>Price</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for book in books %}
+                                    <tr>
+                                        <td>{{ book.BookName }}</td>
+                                        <td>{{ book.Genre }}</td>
+                                        <td>{{ book.Quantity }}</td>
+                                        <td>{{ book.Author }}</td>
+                                        <td>{{ book.Publication }}</td>
+                                        <td>{{ book.Price }}</td>
+                                    </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                {% else %}
+                    <div class="alert alert-info">
+                        No books available in the inventory.
+                    </div>
+                {% endif %}
+                <div class="mt-3">
+                    <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary">Back to Dashboard</a>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% extends "base.html" %}
+
+{% block title %}Total Income - Book Store{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-body text-center">
+                <h2 class="card-title mb-4">Total Income</h2>
+                <div class="display-4 mb-4">₹{{ total }}</div>
+                <p class="text-muted">Total income since the last reset</p>
+                <div class="mt-3">
+                    <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary">Back to Dashboard</a>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
